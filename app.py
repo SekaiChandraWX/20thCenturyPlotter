@@ -11,20 +11,19 @@ import io
 from datetime import datetime
 from bs4 import BeautifulSoup
 
-# ==================== Streamlit page ====================
-st.set_page_config(page_title="20CR Global Plotter — Dewpoint/MSLP & 500/850 mb Winds", layout="wide")
+# -------------------- Streamlit page --------------------
+st.set_page_config(page_title="20CR Global — NARR-style Dewpoint/MSLP & 500/850 mb", layout="wide")
 
-# ==================== Regions (global, IDL-safe) ====================
-# (lon_w, lon_e, lat_s, lat_n). Longitudes may be outside [-180,180] or span across the IDL.
+# -------------------- Regions (global + TC basins; IDL-safe coordinates allowed) --------------------
 REGIONS = {
     "General": {
         "Global (60°S–60°N)": [-180, 180, -60, 60],
         "Worldwide (80°S–80°N)": [-180, 180, -80, 80],
-        "Continental United States": [-125, -66.5, 24.396, 49.384],
+        "Continental United States": [-130, -60, 11, 55],
         "Europe": [-12.2, 49.4, 26.6, 74.3],
         "Middle East and South Asia": [27.9, 102.3, 1.8, 67.5],
         "East and Southeast Asia": [86.4, 160.8, -14.7, 50.9],
-        "Australia and Oceania": [108.8, 191.0, -52.6, -5.8],  # crosses IDL
+        "Australia and Oceania": [108.8, 191.0, -52.6, -5.8],
         "Northern Africa": [-20.5, 55.6, -4.2, 39.4],
         "Southern Africa": [2.8, 59.5, -39.5, -4.7],
         "Northern South America": [-83.5, -31.3, -24.2, 13.7],
@@ -34,16 +33,16 @@ REGIONS = {
     },
     "Tropics / TC Basins": {
         "North Atlantic Basin": [-102.8, -7.9, 6, 57.6],
-        "West Pacific Basin": [94.9, 183.5, -14.6, 56.1],        # crosses IDL
+        "West Pacific Basin": [94.9, 183.5, -14.6, 56.1],
         "East Pacific Basin": [-161.4, -86.3, 3, 39],
-        "Central Pacific Basin": [-188.8, -141.6, 2.4, 41.1],    # crosses IDL
-        "Northern Indian Ocean Basin": [-317, -256.3, -5, 34],   # crosses IDL in 0–360 wrap
+        "Central Pacific Basin": [-188.8, -141.6, 2.4, 41.1],
+        "Northern Indian Ocean Basin": [-317, -256.3, -5, 34],
         "South Indian Ocean Basin": [32.7, 125.4, -44.8, 3.5],
-        "Australian Basin": [100, 192.7, -50.2, -1.9]            # crosses IDL
+        "Australian Basin": [100, 192.7, -50.2, -1.9]
     }
 }
 
-# ==================== Color maps (match your scripts) ====================
+# -------------------- EXACT NARR-style palettes from your scripts --------------------
 def dewpoint_colormap_and_levels():
     cols = [(152,109,77),(150,108,76),(148,107,76),(146,106,75),(144,105,75),(142,104,74),
             (140,102,74),(138,101,73),(136,100,72),(134,99,72),(132,98,71),(130,97,71),
@@ -100,7 +99,6 @@ def cmap_500_wind():
     return mcolors.ListedColormap([(r/255, g/255, b/255) for r,g,b in pw500])
 
 def cmap_850_wind():
-    # 850 palette close to your 20–80 kt style
     pw850 = [
         (240,248,255),(219,240,254),(198,231,253),(177,223,252),(156,214,251),(135,206,250),
         (129,183,241),(123,160,232),(118,136,223),(112,113,214),(106,90,205),(131,102,208),
@@ -115,7 +113,7 @@ def cmap_850_wind():
     ]
     return mcolors.ListedColormap([(r/255, g/255, b/255) for r,g,b in pw850])
 
-# ==================== Dateline-safe recentering & subsetting ====================
+# -------------------- Dateline-safe helpers --------------------
 def mod360(x): return (np.asarray(x) % 360.0 + 360.0) % 360.0
 
 def shortest_arc_mid(lw, le):
@@ -141,28 +139,6 @@ def build_projection_and_extent(lon_w, lon_e, lat_s, lat_n):
     extent = [w_c, e_c, s, n]
     return proj, extent_crs, extent, center
 
-def subset_lon_lat(lon_360, lat, data3d, lon_w, lon_e, lat_s, lat_n):
-    """lon_360: strictly increasing 0..360; data3d: [time, lat, lon]."""
-    lon_pm180 = ((lon_360 + 180.0) % 360.0) - 180.0
-    s, n = (lat_s, lat_n) if lat_s <= lat_n else (lat_n, lat_s)
-    center, w_u, e_u = shortest_arc_mid(lon_w, lon_e)
-    cmp_axis = mod360(lon_pm180)
-    cmp_unwrapped = np.where(cmp_axis < w_u, cmp_axis + 360.0, cmp_axis)
-    idx = np.where((cmp_unwrapped >= w_u) & (cmp_unwrapped <= e_u))[0]
-    if idx.size == 0:
-        idx = np.arange(lon_pm180.size)
-    idx = idx[np.argsort(cmp_unwrapped[idx])]
-    lon_sel = lon_pm180[idx]
-
-    # latitude selection robust to descending arrays
-    if lat[0] < lat[-1]:
-        lat_mask = (lat >= s) & (lat <= n)
-    else:
-        lat_mask = (lat <= n) & (lat >= s)
-    lat_sel = lat[lat_mask]
-    sub = data3d[:, lat_mask, :][:, :, idx]
-    return lon_sel, lat_sel, sub
-
 def ensure_increasing_axes(lon1d, lat1d, *fields):
     lon_up, lat_up, out = lon1d, lat1d, list(fields)
     if lon_up[0] > lon_up[-1]:
@@ -176,49 +152,34 @@ def ensure_increasing_axes(lon1d, lat1d, *fields):
 def to_center_frame_vec(lon_pm180, center_deg):
     return ((lon_pm180 - center_deg + 180.0) % 360.0) - 180.0
 
-# ==================== UI helpers ====================
-def ordinal_suffix(d):
-    if 10 <= d % 100 <= 20: return "th"
-    return {1:"st",2:"nd",3:"rd"}.get(d % 10,"th")
+# -------------------- EXACT NARR-style shared utilities --------------------
+def _narr_axes(fig, extent_centered, extent_crs, proj):
+    ax = plt.axes(projection=proj)
+    ax.set_extent(extent_centered, crs=extent_crs)
+    ax.add_feature(cfeature.BORDERS,   linewidth=0.6)
+    ax.add_feature(cfeature.STATES,    linewidth=0.4)
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.6)
+    return ax
 
-def date_title_str(year, month, day, hour):
-    dt = datetime(year, month, day, hour)
+def _adaptive_barb_stride(lat, lon, target_deg=1.5):
+    def _mean_spacing(arr):
+        a = np.unique(np.round(np.asarray(arr, dtype=float), 8))
+        diffs = np.diff(a)
+        diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
+        return float(np.median(diffs)) if diffs.size else np.nan
+    dlat = _mean_spacing(lat); dlon = _mean_spacing(lon)
+    step_lat = max(1, int(round(target_deg / dlat))) if np.isfinite(dlat) and dlat > 0 else 6
+    step_lon = max(1, int(round(target_deg / dlon))) if np.isfinite(dlon) and dlon > 0 else 6
+    return step_lat, step_lon
+
+def _date_title_str(year, month, day, hour):
+    dt = datetime(int(year), int(month), int(day), int(hour))
     d = dt.day
-    return f"{dt.strftime('%B')} {d}{ordinal_suffix(d)}, {dt.year} at {dt:%H}:00 UTC"
+    def ordinal_suffix(x):
+        return "th" if 10 <= x % 100 <= 20 else {1:"st",2:"nd",3:"rd"}.get(x % 10,"th")
+    return f"{dt.strftime('%B')} {d}{ordinal_suffix(d)}, {dt.year} at {dt:%H}:00 UTC}"
 
-def auto_plot_params(extent, nx, ny):
-    w, e, s, n = extent
-    lon_span = e - w
-    lat_span = abs(n - s)
-    span = max(lon_span, lat_span)
-    if span >= 120:
-        desired_x = 28; barb_len = 5; barb_min_stride = 9
-        mslp_lw = 0.95; coast_lw = 0.9; border_lw = 0.75; state_lw = 0.5; cint = 3
-    elif span >= 60:
-        desired_x = 45; barb_len = 6; barb_min_stride = 8
-        mslp_lw = 1.0; coast_lw = 1.0; border_lw = 0.8; state_lw = 0.6; cint = 2
-    elif span >= 30:
-        desired_x = 65; barb_len = 6; barb_min_stride = 7
-        mslp_lw = 1.05; coast_lw = 1.0; border_lw = 0.8; state_lw = 0.6; cint = 3
-    else:
-        desired_x = 85; barb_len = 6; barb_min_stride = 6
-        mslp_lw = 1.1; coast_lw = 1.0; border_lw = 0.8; state_lw = 0.6; cint = 4
-    stride_x = max(1, min(14, max(nx // desired_x, barb_min_stride)))
-    stride_y = max(1, min(14, max(ny // int(desired_x / 1.6), barb_min_stride)))
-    return {
-        'stride_y': stride_y, 'stride_x': stride_x, 'barb_len': barb_len,
-        'mslp_lw': mslp_lw, 'coast_lw': coast_lw, 'border_lw': border_lw, 'state_lw': state_lw, 'cint': cint
-    }
-
-def plot_base_map(ax, params):
-    ax.add_feature(cfeature.COASTLINE, linewidth=params['coast_lw'])
-    ax.add_feature(cfeature.BORDERS, linewidth=params['border_lw'])
-    try:
-        ax.add_feature(cfeature.STATES, linewidth=params['state_lw'])
-    except Exception:
-        pass
-
-# ==================== PSL helpers (HTML→NetCDF) ====================
+# -------------------- PSL fetching (HTML → .nc) --------------------
 def build_psl_url_level(var_name: str, level_str: str, year: int, month: int, day: int, hour: int) -> str:
     return (
         f"https://psl.noaa.gov/cgi-bin/data/composites/comp.20thc.hour.pl?var={var_name}"
@@ -228,7 +189,6 @@ def build_psl_url_level(var_name: str, level_str: str, year: int, month: int, da
     )
 
 def build_psl_url_sfc(var_name: str, year: int, month: int, day: int, hour: int) -> str:
-    # for dewpoint/MSLP/10m winds (single-levels)
     return (
         f"https://psl.noaa.gov/cgi-bin/data/composites/comp.20thc.hour.pl?var={var_name}"
         f"&level=1000mb&version=3&iy%5B1%5D={year}&im%5B1%5D={month}&id%5B1%5D={day}&ih%5B1%5D={hour:02d}"
@@ -237,23 +197,18 @@ def build_psl_url_sfc(var_name: str, year: int, month: int, day: int, hour: int)
     )
 
 def fetch_netcdf_from_psl(url: str, file_prefix: str, rename_to: str) -> str:
-    r = requests.get(url)
-    r.raise_for_status()
+    r = requests.get(url); r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
-
     netcdf_url = None
     for a in soup.find_all("a", href=True):
         if a["href"].endswith(".nc") and file_prefix in a["href"]:
-            netcdf_url = "https://psl.noaa.gov" + a["href"]
-            break
+            netcdf_url = "https://psl.noaa.gov" + a["href"]; break
     if not netcdf_url:
         for a in soup.find_all("a", href=True):
             if "Get a copy of the netcdf data file" in a.text:
-                netcdf_url = "https://psl.noaa.gov" + a["href"]
-                break
+                netcdf_url = "https://psl.noaa.gov" + a["href"]; break
     if not netcdf_url:
         raise RuntimeError("NetCDF file link not found on PSL page.")
-
     os.makedirs("netcdf_files", exist_ok=True)
     local_path = os.path.join("netcdf_files", rename_to)
     with open(local_path, "wb") as f:
@@ -263,18 +218,12 @@ def fetch_netcdf_from_psl(url: str, file_prefix: str, rename_to: str) -> str:
 def download_level_bundle(level_mb: int, year: int, month: int, day: int, hour: int, tag: str):
     level_str = f"{int(level_mb)}mb"
     base = f"{year:04d}{month:02d}{day:02d}{hour:02d}"
-    u_file = fetch_netcdf_from_psl(
-        build_psl_url_level("Vector+Wind", level_str, year, month, day, hour),
-        "comphour", f"u_{level_mb}_{base}_{tag}.nc"
-    )
-    v_file = fetch_netcdf_from_psl(
-        build_psl_url_level("Vector+Wind", level_str, year, month, day, hour),
-        "vcomphour", f"v_{level_mb}_{base}_{tag}.nc"
-    )
-    h_file = fetch_netcdf_from_psl(
-        build_psl_url_level("Geopotential+Height", level_str, year, month, day, hour),
-        "comphour", f"hgt_{level_mb}_{base}_{tag}.nc"
-    )
+    u_file = fetch_netcdf_from_psl(build_psl_url_level("Vector+Wind", level_str, year, month, day, hour),
+                                   "comphour",  f"u_{level_mb}_{base}_{tag}.nc")
+    v_file = fetch_netcdf_from_psl(build_psl_url_level("Vector+Wind", level_str, year, month, day, hour),
+                                   "vcomphour", f"v_{level_mb}_{base}_{tag}.nc")
+    h_file = fetch_netcdf_from_psl(build_psl_url_level("Geopotential+Height", level_str, year, month, day, hour),
+                                   "comphour",  f"hgt_{level_mb}_{base}_{tag}.nc")
     return u_file, v_file, h_file
 
 def download_sfc_bundle(year: int, month: int, day: int, hour: int, tag: str):
@@ -286,134 +235,121 @@ def download_sfc_bundle(year: int, month: int, day: int, hour: int, tag: str):
     v10  = fetch_netcdf_from_psl(build_psl_url_sfc("10m+Meridional+Wind", year, month, day, hour), "vcomphour", f"v10_{base}_{tag}.nc")
     return air, rh, mslp, u10, v10
 
-# ==================== Meteorology helpers ====================
+# -------------------- Met helpers --------------------
 def calculate_dewpoint_c(T_c, RH_pct):
     a, b = 17.27, 237.7
     alpha = ((a * T_c) / (b + T_c)) + np.log(RH_pct / 100.0)
     return (b * alpha) / (a - alpha)
 
-# ==================== Product renderers ====================
-def render_dewpoint_mslp_10m(ax, lon_plot, lat_sel, center_deg, mslp_sub, T_k_sub, RH_sub, u10_sub, v10_sub, params):
+# -------------------- Product renderers (EXACT layout) --------------------
+def render_dewpoint_mslp_10m(ax, lon_plot, lat_sel, center_deg, mslp_sub, T_k_sub, RH_sub, u10_sub, v10_sub):
     data_crs = ccrs.PlateCarree(central_longitude=center_deg)
 
     Td_c = calculate_dewpoint_c(T_k_sub[0] - 273.15, RH_sub[0])
     Td_f = Td_c * 9/5 + 32
 
+    # Filled dewpoint — vertical colorbar, same ticks/label as your script
     cmap, norm, levels = dewpoint_colormap_and_levels()
     cf = ax.contourf(lon_plot, lat_sel, Td_f, levels=levels, cmap=cmap, norm=norm,
                      transform=data_crs, extend="both", corner_mask=True)
+    cb = plt.colorbar(cf, ax=ax, orientation="vertical", pad=0.02, aspect=25, fraction=0.05)
+    cb.set_label("Dewpoint (°F)")
+    cb.set_ticks(np.arange(-40, 91, 10))
 
-    # Isobars: adaptive 2–4 hPa equivalent using range
-    mslp0 = np.ascontiguousarray((mslp_sub[0] / 100.0))  # Pa->hPa if needed; most 20CR prmsl already Pa
-    cint = params['cint']
-    mmin = np.floor(np.nanmin(mslp0) / cint) * cint
-    mmax = np.ceil(np.nanmax(mslp0) / cint) * cint
-    levels_m = np.arange(mmin, mmax + cint, cint)
-    cs = ax.contour(lon_plot, lat_sel, mslp0, levels=levels_m, colors="black",
-                    linewidths=params['mslp_lw'], transform=data_crs)
+    # MSLP isobars — EXACT: 2 hPa spacing, lw~0.9, inline labels fontsize 8
+    cs = ax.contour(lon_plot, lat_sel, (mslp_sub[0] / 100.0),
+                    levels=np.arange(950, 1051, 2), colors="black", linewidths=0.9,
+                    transform=data_crs)
     ax.clabel(cs, fmt="%d", fontsize=8, inline=True)
 
-    # Barbs
+    # 10 m wind barbs — EXACT: adaptive stride ~1.5°, barb length 5
+    step_lat, step_lon = _adaptive_barb_stride(lat_sel, lon_plot, target_deg=1.5)
     LON2, LAT2 = np.meshgrid(lon_plot, lat_sel)
-    si = params['stride_y']; sj = params['stride_x']
-    ax.barbs(LON2[::si, ::sj], LAT2[::si, ::sj],
-             u10_sub[0, ::si, ::sj], v10_sub[0, ::si, ::sj],
-             length=params['barb_len'], transform=data_crs)
+    ax.barbs(LON2[::step_lat, ::step_lon], LAT2[::step_lat, ::step_lon],
+             u10_sub[0, ::step_lat, ::step_lon], v10_sub[0, ::step_lat, ::step_lon],
+             length=5, transform=data_crs)
 
-    cb = plt.colorbar(cf, ax=ax, orientation="horizontal", pad=0.05, aspect=30, shrink=0.78)
-    cb.set_label("Dewpoint (°F)")
-
-def render_pl_winds(ax, lon_plot, lat_sel, center_deg, u_sub_ms, v_sub_ms, hgt_m, level_mb, params):
+def render_pl_winds(ax, lon_plot, lat_sel, center_deg, u_ms, v_ms, hgt_m, level_mb):
     data_crs = ccrs.PlateCarree(central_longitude=center_deg)
 
-    u = u_sub_ms[0]; v = v_sub_ms[0]
-    wspd_kts = np.sqrt(u**2 + v**2) * 1.94384
+    # Speed shading (kts), barb components in kts — EXACT like your script
+    u_kts = u_ms[0] * 1.94384
+    v_kts = v_ms[0] * 1.94384
+    wspd_kts = np.sqrt(u_kts**2 + v_kts**2)
 
     if level_mb == 500:
         cmap_ws = cmap_500_wind()
-        ws_levels = np.arange(20, 141, 1)
-        # Convert meters → dam levels typical for 500 mb (approx range 480–600 dam)
-        z = (hgt_m[0] / 10.0)
-        h_levels = np.arange(480, 600, 6)
-        title_level = "500 mb"
+        levels = np.linspace(20, 140, cmap_ws.N + 1)
+        norm = mcolors.BoundaryNorm(levels, cmap_ws.N)
+        cb_ticks = np.arange(20, 141, 10)
+        base = 60.0
     else:
         cmap_ws = cmap_850_wind()
-        ws_levels = np.arange(20, 81, 1)
-        z = (hgt_m[0] / 10.0)
-        h_levels = np.arange(120, 180, 3)
-        title_level = "850 mb"
+        levels = np.linspace(20, 80, cmap_ws.N + 1)
+        norm = mcolors.BoundaryNorm(levels, cmap_ws.N)
+        cb_ticks = np.arange(20, 81, 10)
+        base = 30.0
 
-    cf = ax.contourf(lon_plot, lat_sel, wspd_kts, levels=ws_levels, cmap=cmap_ws,
-                     extend='both', transform=data_crs)
-    cs = ax.contour(lon_plot, lat_sel, z, levels=h_levels, colors='black',
-                    linewidths=1.0, transform=data_crs)
-    ax.clabel(cs, inline=True, fontsize=8, colors='black', fmt='%d')
+    # Filled wind speed — vertical colorbar, same pad/aspect/fraction
+    cf = ax.contourf(lon_plot, lat_sel, wspd_kts, levels=levels, cmap=cmap_ws, norm=norm,
+                     transform=data_crs, extend="both", corner_mask=True)
+    cb = plt.colorbar(cf, ax=ax, orientation="vertical", pad=0.02, aspect=25, fraction=0.05)
+    cb.set_label(f"{level_mb} mb Wind Speed (kt)")
+    cb.set_ticks(cb_ticks)
 
-    # Barbs in knots (consistent with your script)
+    # Heights — EXACT spacing logic: compute min/max and use base (m) of 30 @850, 60 @500
+    hmin, hmax = np.nanmin(hgt_m[0]), np.nanmax(hgt_m[0])
+    start = base * np.floor(hmin / base)
+    stop  = base * np.ceil(hmax / base)
+    hlev = np.arange(start, stop + base, base)
+    cs = ax.contour(lon_plot, lat_sel, hgt_m[0], levels=hlev, colors="black", linewidths=0.9,
+                    transform=data_crs)
+    ax.clabel(cs, fmt="%d", fontsize=8, inline=True)
+
+    # Wind barbs in kts — EXACT stride/length
+    step_lat, step_lon = _adaptive_barb_stride(lat_sel, lon_plot, target_deg=1.5)
     LON2, LAT2 = np.meshgrid(lon_plot, lat_sel)
-    si = params['stride_y']; sj = params['stride_x']
-    ax.barbs(LON2[::si, ::sj], LAT2[::si, ::sj],
-             u[::si, ::sj] * 1.94384, v[::si, ::sj] * 1.94384,
-             length=params['barb_len'], transform=data_crs)
+    ax.barbs(LON2[::step_lat, ::step_lon], LAT2[::step_lat, ::step_lon],
+             u_kts[::step_lat, ::step_lon], v_kts[::step_lat, ::step_lon],
+             length=5, transform=data_crs)
 
-    cb = plt.colorbar(cf, ax=ax, orientation='horizontal', pad=0.05, aspect=30, shrink=0.78)
-    cb.set_label(f'{title_level} Wind Speed (kt)')
-
-# ==================== Main generator ====================
+# -------------------- Main generator --------------------
 def generate_visualization(year, month, day, hour, region_coords, product):
-    # Tag for file naming; helps avoid collisions
     tag = "st"
-
-    # Build region & projection
     lon_w, lon_e, lat_s, lat_n = region_coords
     proj, extent_crs, extent_centered, center_deg = build_projection_and_extent(lon_w, lon_e, lat_s, lat_n)
 
-    # Figure/axes and map cosmetics
-    fig, ax = plt.subplots(figsize=(16, 10), subplot_kw={'projection': proj})
-    ax.set_extent(extent_centered, crs=extent_crs)
-    plot_title_time = date_title_str(int(year), int(month), int(day), int(hour))
+    # Figure & EXACT sizing: 16x10.35, tight_layout, 300 dpi on save
+    fig = plt.figure(figsize=(16, 10.35))
+    ax = _narr_axes(fig, extent_centered, extent_crs, proj)
 
-    # ---------------- Product Branches ----------------
+    # Title/footer EXACT positions/fonts
+    dt_str = _date_title_str(year, month, day, hour)
+    title = None
+
     if product == "Dewpoint, MSLP, and 10 m wind barbs":
         air_f, rh_f, mslp_f, u10_f, v10_f = download_sfc_bundle(int(year), int(month), int(day), int(hour), tag)
 
-        # Read & standardize axes
         with nc.Dataset(mslp_f) as ds:
             mslp = ds.variables['prmsl'][:]
             lon0 = ds.variables['lon'][:]; lat = ds.variables['lat'][:]
-        with nc.Dataset(air_f) as ds:
-            T_k = ds.variables['air'][:]
-        with nc.Dataset(rh_f) as ds:
-            RH = ds.variables['rhum'][:]
-        with nc.Dataset(u10_f) as ds:
-            u10 = ds.variables['uwnd'][:]
-        with nc.Dataset(v10_f) as ds:
-            v10 = ds.variables['vwnd'][:]
+        with nc.Dataset(air_f) as ds:  T_k = ds.variables['air'][:]
+        with nc.Dataset(rh_f)  as ds:  RH  = ds.variables['rhum'][:]
+        with nc.Dataset(u10_f) as ds:  u10 = ds.variables['uwnd'][:]
+        with nc.Dataset(v10_f) as ds:  v10 = ds.variables['vwnd'][:]
 
-        # Ensure lon strictly increasing 0..360
         order = np.argsort(lon0)
         lon_360 = lon0[order]
         mslp = mslp[:, :, order]; T_k = T_k[:, :, order]; RH = RH[:, :, order]
-        u10 = u10[:, :, order]; v10 = v10[:, :, order]
+        u10  = u10[:,  :, order]; v10 = v10[:,  :, order]
 
-        # Subset to region and center longitudes
-        lon_sel, lat_sel, mslp_sub = subset_lon_lat(lon_360, lat, mslp, lon_w, lon_e, lat_s, lat_n)
-        _,       _,       T_k_sub  = subset_lon_lat(lon_360, lat, T_k,  lon_w, lon_e, lat_s, lat_n)
-        _,       _,       RH_sub   = subset_lon_lat(lon_360, lat, RH,   lon_w, lon_e, lat_s, lat_n)
-        _,       _,       u10_sub  = subset_lon_lat(lon_360, lat, u10,  lon_w, lon_e, lat_s, lat_n)
-        _,       _,       v10_sub  = subset_lon_lat(lon_360, lat, v10,  lon_w, lon_e, lat_s, lat_n)
+        lon_pm180 = ((lon_360 + 180.0) % 360.0) - 180.0
+        lon_plot = to_center_frame_vec(lon_pm180, center_deg)
+        lon_plot, lat, mslp, T_k, RH, u10, v10 = ensure_increasing_axes(lon_plot, lat, mslp, T_k, RH, u10, v10)
 
-        lon_plot = to_center_frame_vec(((lon_sel + 180.0) % 360.0) - 180.0, center_deg)
-        lon_plot, lat_sel, mslp_sub, T_k_sub, RH_sub, u10_sub, v10_sub = ensure_increasing_axes(
-            lon_plot, lat_sel, mslp_sub, T_k_sub, RH_sub, u10_sub, v10_sub
-        )
+        render_dewpoint_mslp_10m(ax, lon_plot, lat, center_deg, mslp, T_k, RH, u10, v10)
+        title = f"Dewpoint, MSLP, and Wind — {dt_str}"
 
-        params = auto_plot_params(extent_centered, nx=lon_plot.size, ny=lat_sel.size)
-        plot_base_map(ax, params)
-        render_dewpoint_mslp_10m(ax, lon_plot, lat_sel, center_deg, mslp_sub, T_k_sub, RH_sub, u10_sub, v10_sub, params)
-        title = f"Dewpoint, MSLP, and Wind — {plot_title_time}"
-
-        # Cleanup
         for f in [air_f, rh_f, mslp_f, u10_f, v10_f]:
             try:
                 if os.path.exists(f): os.remove(f)
@@ -432,61 +368,47 @@ def generate_visualization(year, month, day, hour, region_coords, product):
         with nc.Dataset(h_f) as ds:
             hgt_m = ds.variables['hgt'][0, ...]  # meters
 
-        # Expand to [time, lat, lon] for convenience
-        u3 = u[np.newaxis, ...]
-        v3 = v[np.newaxis, ...]
-        z3 = hgt_m[np.newaxis, ...]
+        # Shape to [time, lat, lon] for consistency
+        u3 = u[np.newaxis, ...]; v3 = v[np.newaxis, ...]; z3 = hgt_m[np.newaxis, ...]
 
-        # Strictly increasing 0..360 longitudes
         order = np.argsort(lon0)
         lon_360 = lon0[order]
         u3 = u3[:, :, order]; v3 = v3[:, :, order]; z3 = z3[:, :, order]
 
-        # Subset & center
-        lon_sel, lat_sel, u_sub = subset_lon_lat(lon_360, lat, u3, lon_w, lon_e, lat_s, lat_n)
-        _,       _,       v_sub = subset_lon_lat(lon_360, lat, v3, lon_w, lon_e, lat_s, lat_n)
-        _,       _,       z_sub = subset_lon_lat(lon_360, lat, z3, lon_w, lon_e, lat_s, lat_n)
+        lon_pm180 = ((lon_360 + 180.0) % 360.0) - 180.0
+        lon_plot = to_center_frame_vec(lon_pm180, center_deg)
+        lon_plot, lat, u3, v3, z3 = ensure_increasing_axes(lon_plot, lat, u3, v3, z3)
 
-        lon_plot = to_center_frame_vec(((lon_sel + 180.0) % 360.0) - 180.0, center_deg)
-        lon_plot, lat_sel, u_sub, v_sub, z_sub = ensure_increasing_axes(lon_plot, lat_sel, u_sub, v_sub, z_sub)
+        render_pl_winds(ax, lon_plot, lat, center_deg, u3, v3, z3, level)
+        title = f"{level} mb Wind Speed & Height — {dt_str}"
 
-        params = auto_plot_params(extent_centered, nx=lon_plot.size, ny=lat_sel.size)
-        plot_base_map(ax, params)
-        render_pl_winds(ax, lon_plot, lat_sel, center_deg, u_sub, v_sub, z_sub, level, params)
-        title = f"{level} mb Wind Speed & Height — {plot_title_time}"
-
-        # Cleanup
         for f in [u_f, v_f, h_f]:
             try:
                 if os.path.exists(f): os.remove(f)
             except Exception:
                 pass
-
     else:
         raise ValueError("Unknown product selected.")
 
-    ax.set_title(title + "\nPlotted by Sekai Chandra (@Sekai_WX)")
+    plt.title(title, fontsize=14, weight="bold", pad=14)
+    plt.figtext(0.5, 0.02, "Plotted by Sekai Chandra (@Sekai_WX)", ha="center", fontsize=11, weight="bold")
+
     buffer = io.BytesIO()
-    plt.savefig(buffer, format='png', bbox_inches='tight', dpi=150)
+    plt.tight_layout()
+    plt.savefig(buffer, format="jpg", bbox_inches="tight", dpi=300)
     buffer.seek(0)
     plt.close(fig)
     return buffer
 
-# ==================== Streamlit UI ====================
-st.title("20th Century Reanalysis (20CR) — Global Plotter")
+# -------------------- Streamlit UI --------------------
+st.title("20th Century Reanalysis — NARR-style Global Plotter")
 
-# Date inputs
 col1, col2, col3, col4 = st.columns(4)
-with col1:
-    year = st.number_input("Year", min_value=1850, max_value=datetime.now().year, value=1971)
-with col2:
-    month = st.number_input("Month", min_value=1, max_value=12, value=2)
-with col3:
-    day = st.number_input("Day", min_value=1, max_value=31, value=21)
-with col4:
-    hour = st.number_input("Hour (UTC)", min_value=0, max_value=23, value=21)
+with col1: year = st.number_input("Year", min_value=1850, max_value=datetime.now().year, value=1971)
+with col2: month = st.number_input("Month", min_value=1, max_value=12, value=2)
+with col3: day = st.number_input("Day", min_value=1, max_value=31, value=21)
+with col4: hour = st.number_input("Hour (UTC)", min_value=0, max_value=23, value=21)
 
-# Region + Product
 col5, col6, col7 = st.columns([1.2, 1.0, 0.7])
 with col5:
     region_options = []
@@ -498,18 +420,13 @@ with col5:
 with col6:
     product = st.selectbox(
         "Product",
-        [
-            "Dewpoint, MSLP, and 10 m wind barbs",
-            "500 mb wind & height",
-            "850 mb wind & height",
-        ],
+        ["Dewpoint, MSLP, and 10 m wind barbs", "500 mb wind & height", "850 mb wind & height"],
         index=0
     )
 
 with col7:
     generate_button = st.button("Generate", type="primary", help="Generate the 20CR visualization")
 
-# Run
 if generate_button:
     category, region_name = selected_region.split(": ", 1)
     region_coords = REGIONS[category][region_name]
@@ -519,11 +436,11 @@ if generate_button:
         st.success("Visualization generated successfully!")
         st.image(image_buffer, caption=f"{product} • {int(year)}-{int(month):02d}-{int(day):02d} {int(hour):02d} UTC • {region_name}")
         st.download_button(
-            label="Download Image",
+            label="Download JPEG",
             data=image_buffer,
-            file_name=f"20CR_{product.replace(' ','_').replace('/','-')}_{int(year)}{int(month):02d}{int(day):02d}{int(hour):02d}_{region_name.replace(' ', '_')}.png",
-            mime="image/png"
+            file_name=f"20CR_{product.replace(' ','_').replace('/','-')}_{int(year)}{int(month):02d}{int(day):02d}{int(hour):02d}_{region_name.replace(' ', '_')}.jpg",
+            mime="image/jpeg"
         )
     except Exception as e:
         st.error(f"Error generating visualization: {str(e)}")
-        st.info("Verify the date/time exists in 20CR, and that PSL is reachable. Some older hours may be unavailable.")
+        st.info("Verify the date/time exists in 20CR, and that PSL is reachable.")
