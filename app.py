@@ -17,7 +17,6 @@ st.set_page_config(page_title="20th Century Reanalysis Archive Data Plotter", la
 # -------------------- Regions (global + TC basins; IDL-safe coordinates allowed) --------------------
 REGIONS = {
     "General": {
-        "Global (60°S–60°N)": [-180, 180, -60, 60],
         "Worldwide (80°S–80°N)": [-180, 180, -80, 80],
         "Continental United States": [-130, -60, 11, 55],
         "Europe": [-12.2, 49.4, 26.6, 74.3],
