@@ -12,7 +12,7 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 
 # -------------------- Streamlit page --------------------
-st.set_page_config(page_title="20CR Global — NARR-style Dewpoint/MSLP & 500/850 mb", layout="wide")
+st.set_page_config(page_title="20th Century Reanalysis Archive Data Plotter", layout="wide")
 
 # -------------------- Regions (global + TC basins; IDL-safe coordinates allowed) --------------------
 REGIONS = {
@@ -438,7 +438,7 @@ def generate_visualization(year, month, day, hour, region_coords, product):
     return buffer
 
 # -------------------- Streamlit UI --------------------
-st.title("20th Century Reanalysis — NARR-style Global Plotter")
+st.title("20th Century Reanalysis Archive Data Plotter")
 
 col1, col2, col3, col4 = st.columns(4)
 with col1: year = st.number_input("Year", min_value=1850, max_value=datetime.now().year, value=1971)
